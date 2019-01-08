@@ -52,4 +52,53 @@ class ConvVAE(object):
             h = tf.layers.conv2d(inputs=h, filters=256, kernel_size=4,
                                  strides=2, activation=tf.nn.relu, name="encoder_conv4")
 
+            # now we have the data into a one-dimensional array.
+            # it is now ready to be pushed into our Variational Auto-Encoder
             h = tf.reshape(tensor=h, shape=[-1, 2*2*256])
+
+            # mean layer of the VAE
+            self.mu = tf.layers.dense(inputs=h, units=self.z_size, name='encoder_fc_mu')
+            
+            # standard deviation layer of the VAE
+            self.logvar = tf.layers.dense(inputs=h, units=self.z_size, name='encoder_fc_logvar')
+            self.sigma = tf.exp(self.logvar / 2.0)
+
+            self.epsilon = tf.random_normal([self.batch_size, self.z_size])
+
+            # final latent vector
+            self.z = self.mu + self.sigma * self.epsilon
+
+            # building the decoder
+            h = tf.layers.dense(inputs=self.z, units=self.z_size, name='decoder_fc')
+
+            h = tf.reshape(tensor=h, shape=[-1, 1, 1, 2*2*256])
+
+            # first inverted Conv layer
+            h = tf.layers.conv2d(inputs=h, filters = 128, kernel_size=5, strides=2, activation=tf.nn.relu, name='decoder_deconv1')
+            
+            # second inverted Conv layer
+            h = tf.layers.conv2d(inputs=h, filters = 64, kernel_size=5, strides=2, activation=tf.nn.relu, name='decoder_deconv2')
+            
+            # third inverted Conv layer
+            h = tf.layers.conv2d(inputs=h, filters = 32, kernel_size=6, strides=2, activation=tf.nn.relu, name='decoder_deconv3')
+            
+            # fourth & final inverted Conv layer
+            self.y = tf.layers.conv2d(inputs=h, filters = 3, kernel_size=6, strides=2, activation=tf.nn.sigmoid, name='decoder_deconv4')
+
+            # implement the training operations
+            # we want to train the network such that the processed image y, matches the original image x
+            if self.is_training == True:
+                
+                self.global_step = tf.Variable(initial_value=0, name='global_step', trainable=False)
+                
+                # calculating mse loss
+                self.r_loss = tf.reduce_sum(tf.square(self.x - self.y), reduction_indices=[1, 2, 3])
+                self.r_loss = tf.reduce_mean(self.r_loss)
+
+                # calculating the Kullback–Leibler loss
+                self.kl_loss = -0.5 * tf.reduce_sum((1 + self.logvar - tf.square(self.mu) - tf.exp(self.logvar)), reduction_indicies=1)
+
+                self.kl_loss = tf.maximum(self.kl_loss, self.kl_tolerance * self.z_size)
+
+                self.kl_loss = tf.reduce_mean(self.kl_loss)
+
