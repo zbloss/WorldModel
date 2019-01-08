@@ -96,7 +96,7 @@ class ConvVAE(object):
                 self.r_loss = tf.reduce_mean(self.r_loss)
 
                 # calculating the Kullback–Leibler loss
-                self.kl_loss = -0.5 * tf.reduce_sum((1 + self.logvar - tf.square(self.mu) - tf.exp(self.logvar)), reduction_indicies=1)
+                self.kl_loss = -0.5 * tf.reduce_sum((1 + self.logvar - tf.square(self.mu) - tf.exp(self.logvar)), reduction_indices=1)
 
                 self.kl_loss = tf.maximum(self.kl_loss, self.kl_tolerance * self.z_size)
 
