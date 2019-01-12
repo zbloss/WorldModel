@@ -96,4 +96,26 @@ class MDNRNN(object):
             # biases
             output_b = tf.get_variable(name="output_b", shape=[NOUT])
 
-            # deterministic output of the RNN
+        # deterministic output of the RNN
+        output, last_state = dynamic_rnn(
+            cell=cell,
+            inputs=actual_input_x,
+            initial_state=self.initial_state,
+            dtype=tf.float32,
+            swap_memory=True,
+            scope='RNN'
+        )
+
+    ### Build the MDN ###
+    output = tf.reshape(output, shape=[-1, hps.rnn_size])
+
+    # this is where we gather the deterministic output of the RNN so that we can
+    # feed it into the MDN. Connecting the Networks!
+
+    # This is the hidden layer that bridges the gap between the output of the RNN
+    # and the input of the MDN 
+    output = tf.nn.xw_plus_b(x=output, weights=output_w, biases=output_b)
+    output = tf.reshape(output, shape=[-1, KMIX*3])
+
+
+
