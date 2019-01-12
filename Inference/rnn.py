@@ -4,6 +4,7 @@ import tensorflow as tf
 from tensorflow.contrib.rnn import LayerNormBasicLSTMCell
 from tensorflow.nn.rnn_cell import DropoutWrapper
 from tensorflow.nn import dynamic_rnn
+from collections import namedtuple
 
 
 class MDNRNN(object):
@@ -106,16 +107,66 @@ class MDNRNN(object):
             scope='RNN'
         )
 
-    ### Build the MDN ###
-    output = tf.reshape(output, shape=[-1, hps.rnn_size])
+        ### Build the MDN ###
+        output = tf.reshape(output, shape=[-1, hps.rnn_size])
 
-    # this is where we gather the deterministic output of the RNN so that we can
-    # feed it into the MDN. Connecting the Networks!
+        # this is where we gather the deterministic output of the RNN so that we can
+        # feed it into the MDN. Connecting the Networks!
 
-    # This is the hidden layer that bridges the gap between the output of the RNN
-    # and the input of the MDN 
-    output = tf.nn.xw_plus_b(x=output, weights=output_w, biases=output_b)
-    output = tf.reshape(output, shape=[-1, KMIX*3])
+        # This is the hidden layer that bridges the gap between the output of the RNN
+        # and the input of the MDN
+        output = tf.nn.xw_plus_b(x=output, weights=output_w, biases=output_b)
+        output = tf.reshape(output, shape=[-1, KMIX*3])
+        self.final_state = last_state
 
+        # Parameters of a Mixture Density Model:
+        # 1. Mixing Coefficients
+        # 2. Means
+        # 3. Variances
 
+        def get_mdn_coeff(output):
+            logmix, mean, logstd = tf.split(
+                value=output,
+                num_or_size_splits=3,
+                axis=1
+            )
+            logmix = logmix - \
+                tf.reduce_logsumexp(logmix, axis=1, keep_dims=True)
+            return logmix, mean, logstd
 
+        out_logmix, out_mean, out_logstd = get_mdn_coeff(output=output)
+        self.out_logmix = out_logmix
+        self.out_mean = out_logmix
+        self.out_logstd = out_logstd
+
+        # Implementing the training operations
+        loqSqrtTwoPI = np.log(np.sqrt(2.0 * np.pi))
+
+        # custom loss function
+        def tf_lognormal(y, mean, logstd):
+            return -0.5 * ((y - mean) / tf.exp(logstd))**2 - logstd - logSqrtTwoPI
+
+        def get_loss_func(logmix, mean, logstd, y):
+            v = logmix + tf_lognormal(y, mean, logstd)
+            v = tf.math.reduce_logsumexp(v, axis=1, keep_dims=True)
+            return -tf.reduce_mean(v)
+
+        flat_target_data = tf.reshape(self.output_x, shape=[-1, 1])
+
+        lossfunc = get_loss_func(logmix=self.out_logmix, mean=self.out_mean,
+                                 logstd=self.out_logstd, y=flat_target_data)
+
+        self.cost = tf.reduce_mean(lossfunc)
+
+        if self.hps.is_training == 1:
+            self.lr = tf.Variable(self.hps.learning_rate, trainable=False)
+            self.optimizer = tf.train.AdamOptimizer(learning_rate=self.lr)
+            gvs = self.optimizer.compute_gradients(loss=self.cost)
+
+            # preparing for the exploding gradient phenomenon
+            capped_gvs = [(tf.clip_by_value(t=grad, clip_value_min=-self.hps.grad_clip,
+                                            clip_value_max=self.hps.grad_clip), var) for grad, var in gvs]
+
+            self.train_op = self.optimizer.apply_gradients(
+                grads_and_vars=capped_gvs, global_step=self.global_step, name='train_step')
+        self.init = tf.global_variables_initializer()

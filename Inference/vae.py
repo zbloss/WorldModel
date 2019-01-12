@@ -119,6 +119,7 @@ class ConvVAE(object):
                 self.optimizer = tf.train.AdamOptimizer(learning_rate=self.lr)
 
                 grads = self.optimizer.compute_gradients(loss=self.loss)
-                self.train_op = self.optimizer.apply_gradients(grads_and_vars=grads, global_step=self.global_step, name='train_step')
+                self.train_op = self.optimizer.apply_gradients(
+                    grads_and_vars=grads, global_step=self.global_step, name='train_step')
 
             self.init = tf.global_variables_initializer()
