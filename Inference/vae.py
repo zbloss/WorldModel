@@ -1,125 +1,167 @@
-# Building the VAE model
+# Building the CNN-VAE model
+
+# Importing the libraries
+
 import numpy as np
 import tensorflow as tf
+import json
+import os
 
+# Building the CNN-VAE model within a class
 
 class ConvVAE(object):
 
-    # initializing all params and variables of the ConvVAE class
-    def __init__(self, z_size=32, batch_size=1, learning_rate=0.0001, kl_tolerance=0.5, is_training=False, reuse=False, gpu_mode=False):
-        self.z_size = z_size
-        self.batch_size = batch_size
-        self.learning_rate = learning_rate
-        self.kl_tolerance = kl_tolerance
-        self.is_training = is_training
-        self.reuse = reuse
-        self.gpu_mode = gpu_mode
+  # Initializing all the parameters and variables of the ConvVAE class
+  def __init__(self, z_size=32, batch_size=1, learning_rate=0.0001, kl_tolerance=0.5, is_training=False, reuse=False, gpu_mode=False):
+    self.z_size = z_size
+    self.batch_size = batch_size
+    self.learning_rate = learning_rate
+    self.kl_tolerance = kl_tolerance
+    self.is_training = is_training
+    self.reuse = reuse
+    with tf.variable_scope('conv_vae', reuse=self.reuse):
+      if not gpu_mode:
+        with tf.device('/cpu:0'):
+          tf.logging.info('Model using cpu.')
+          self._build_graph()
+      else:
+        tf.logging.info('Model using gpu.')
+        self._build_graph()
+    self._init_session()
 
-        with tf.variable_scope('conv_vae', reuse=self.reuse):
-            if gpu_mode == False:
-                with tf.device('/cpu:0'):
-                    tf.logging.info('Model is using the CPU...')
-                    self._build_graph()
-            else:
-                tf.logging.info('Model is using the GPU...')
-                self._build_graph()
+  # Making a method that creates the VAE model architecture itself
+  def _build_graph(self):
+    self.g = tf.Graph()
+    with self.g.as_default():
+      self.x = tf.placeholder(tf.float32, shape=[None, 64, 64, 3])
+      # Building the Encoder part of the VAE
+      h = tf.layers.conv2d(self.x, 32, 4, strides=2, activation=tf.nn.relu, name="enc_conv1")
+      h = tf.layers.conv2d(h, 64, 4, strides=2, activation=tf.nn.relu, name="enc_conv2")
+      h = tf.layers.conv2d(h, 128, 4, strides=2, activation=tf.nn.relu, name="enc_conv3")
+      h = tf.layers.conv2d(h, 256, 4, strides=2, activation=tf.nn.relu, name="enc_conv4")
+      h = tf.reshape(h, [-1, 2*2*256])
+      # Building the "V" part of the VAE
+      self.mu = tf.layers.dense(h, self.z_size, name="enc_fc_mu")
+      self.logvar = tf.layers.dense(h, self.z_size, name="enc_fc_log_var")
+      self.sigma = tf.exp(self.logvar / 2.0)
+      self.epsilon = tf.random_normal([self.batch_size, self.z_size])
+      self.z = self.mu + self.sigma * self.epsilon
+      # Building the Decoder part of the VAE
+      h = tf.layers.dense(self.z, 1024, name="dec_fc")
+      h = tf.reshape(h, [-1, 1, 1, 1024])
+      h = tf.layers.conv2d_transpose(h, 128, 5, strides=2, activation=tf.nn.relu, name="dec_deconv1")
+      h = tf.layers.conv2d_transpose(h, 64, 5, strides=2, activation=tf.nn.relu, name="dec_deconv2")
+      h = tf.layers.conv2d_transpose(h, 32, 6, strides=2, activation=tf.nn.relu, name="dec_deconv3")
+      self.y = tf.layers.conv2d_transpose(h, 3, 6, strides=2, activation=tf.nn.sigmoid, name="dec_deconv4")
+      # Implementing the training operations
+      if self.is_training:
+        self.global_step = tf.Variable(0, name='global_step', trainable=False)
+        self.r_loss = tf.reduce_sum(tf.square(self.x - self.y), reduction_indices = [1,2,3])
+        self.r_loss = tf.reduce_mean(self.r_loss)
+        self.kl_loss = - 0.5 * tf.reduce_sum((1 + self.logvar - tf.square(self.mu) - tf.exp(self.logvar)), reduction_indices = 1)
+        self.kl_loss = tf.maximum(self.kl_loss, self.kl_tolerance * self.z_size)
+        self.kl_loss = tf.reduce_mean(self.kl_loss)
+        self.loss = self.r_loss + self.kl_loss
+        self.lr = tf.Variable(self.learning_rate, trainable=False)
+        self.optimizer = tf.train.AdamOptimizer(self.lr)
+        grads = self.optimizer.compute_gradients(self.loss)
+        self.train_op = self.optimizer.apply_gradients(grads, global_step=self.global_step, name='train_step')
+      self.init = tf.global_variables_initializer()
 
-        self._init_session()
+  # Making a method that initializes a TensorFlow session
+  def _init_session(self):
+    self.sess = tf.Session(graph=self.g)
+    self.sess.run(self.init)
 
-    # creating the VAE model architecture
+  # Making a method that closes a TensorFlow session
+  def close_sess(self):
+    self.sess.close()
 
-    def _build_graph(self):
+  # Making a method that encodes a raw frame x into the latent space representation
+  def encode(self, x):
+    return self.sess.run(self.z, feed_dict={self.x: x})
 
-        # new self attribute, the graph
-        self.g = tf.Graph()
-        with self.g.as_default():
-            # 64x64x3 - 3 because we are using RGB images
-            self.x = tf.placeholder(dtype=tf.float32, shape=[None, 64, 64, 3])
+  # Making a method that encodes a raw frame x into the mean and logvariance parts of the latent vectors space
+  def encode_mu_logvar(self, x):
+    (mu, logvar) = self.sess.run([self.mu, self.logvar], feed_dict={self.x: x})
+    return mu, logvar
 
-            # first Conv layer
-            h = tf.layers.conv2d(inputs=self.x, filters=32, kernel_size=4,
-                                 strides=2, activation=tf.nn.relu, name="encoder_conv1")
+  # Making a method that decodes a latent vector z into the reconstructed frame
+  def decode(self, z):
+    return self.sess.run(self.y, feed_dict={self.z: z})
 
-            # second Conv layer
-            h = tf.layers.conv2d(inputs=h, filters=64, kernel_size=4,
-                                 strides=2, activation=tf.nn.relu, name="encoder_conv2")
+  # Making a method that gets the training parameters of the VAE model
+  def get_model_params(self):
+    model_names = []
+    model_params = []
+    model_shapes = []
+    with self.g.as_default():
+      t_vars = tf.trainable_variables()
+      for var in t_vars:
+        param_name = var.name
+        p = self.sess.run(var)
+        model_names.append(param_name)
+        params = np.round(p*10000).astype(np.int).tolist()
+        model_params.append(params)
+        model_shapes.append(p.shape)
+    return model_params, model_shapes, model_names
 
-            # third Conv layer
-            h = tf.layers.conv2d(inputs=h, filters=128, kernel_size=4,
-                                 strides=2, activation=tf.nn.relu, name="encoder_conv3")
+  # Making a method that gets the random parameters of the VAE model
+  def get_random_model_params(self, stdev=0.5):
+    _, mshape, _ = self.get_model_params()
+    rparam = []
+    for s in mshape:
+      rparam.append(np.random.standard_cauchy(s)*stdev)
+    return rparam
 
-            # fourth Conv layer
-            h = tf.layers.conv2d(inputs=h, filters=256, kernel_size=4,
-                                 strides=2, activation=tf.nn.relu, name="encoder_conv4")
+  # Making a method that sets specific weights to chosen values in the VAE model
+  def set_model_params(self, params):
+    with self.g.as_default():
+      t_vars = tf.trainable_variables()
+      idx = 0
+      for var in t_vars:
+        pshape = self.sess.run(var).shape
+        p = np.array(params[idx])
+        assert pshape == p.shape, "inconsistent shape"
+        assign_op = var.assign(p.astype(np.float)/10000.)
+        self.sess.run(assign_op)
+        idx += 1
 
-            # now we have the data into a one-dimensional array.
-            # it is now ready to be pushed into our Variational Auto-Encoder
-            h = tf.reshape(tensor=h, shape=[-1, 2*2*256])
+  # Making a method that loads saved VAE weights from a JSON file
+  def load_json(self, jsonfile='Weights/vae_weights.json'):
+    with open(jsonfile, 'r') as f:
+      params = json.load(f)
+    self.set_model_params(params)
 
-            # mean layer of the VAE
-            self.mu = tf.layers.dense(
-                inputs=h, units=self.z_size, name='encoder_fc_mu')
+  # Making a method that saves trained VAE weights into a JSON file
+  def save_json(self, jsonfile='Weights/vae_weights.json'):
+    model_params, model_shapes, model_names = self.get_model_params()
+    qparams = []
+    for p in model_params:
+      qparams.append(p)
+    with open(jsonfile, 'wt') as outfile:
+      json.dump(qparams, outfile, sort_keys=True, indent=0, separators=(',', ': '))
 
-            # standard deviation layer of the VAE
-            self.logvar = tf.layers.dense(
-                inputs=h, units=self.z_size, name='encoder_fc_logvar')
-            self.sigma = tf.exp(self.logvar / 2.0)
+  # Making a method that sets some parameters to random values in the VAE model (this is usually done at the beginning of the training process)
+  def set_random_params(self, stdev=0.5):
+    rparam = self.get_random_model_params(stdev)
+    self.set_model_params(rparam)
 
-            self.epsilon = tf.random_normal([self.batch_size, self.z_size])
+  # Making a method that saves the model into a chosen directory
+  def save_model(self, model_save_path):
+    sess = self.sess
+    with self.g.as_default():
+      saver = tf.train.Saver(tf.global_variables())
+    checkpoint_path = os.path.join(model_save_path, 'vae')
+    tf.logging.info('saving model %s.', checkpoint_path)
+    saver.save(sess, checkpoint_path, 0)
 
-            # final latent vector
-            self.z = self.mu + self.sigma * self.epsilon
-
-            # building the decoder
-            h = tf.layers.dense(
-                inputs=self.z, units=self.z_size, name='decoder_fc')
-
-            h = tf.reshape(tensor=h, shape=[-1, 1, 1, 2*2*256])
-
-            # first inverted Conv layer
-            h = tf.layers.conv2d(inputs=h, filters=128, kernel_size=5,
-                                 strides=2, activation=tf.nn.relu, name='decoder_deconv1')
-
-            # second inverted Conv layer
-            h = tf.layers.conv2d(inputs=h, filters=64, kernel_size=5,
-                                 strides=2, activation=tf.nn.relu, name='decoder_deconv2')
-
-            # third inverted Conv layer
-            h = tf.layers.conv2d(inputs=h, filters=32, kernel_size=6,
-                                 strides=2, activation=tf.nn.relu, name='decoder_deconv3')
-
-            # fourth & final inverted Conv layer
-            self.y = tf.layers.conv2d(inputs=h, filters=3, kernel_size=6,
-                                      strides=2, activation=tf.nn.sigmoid, name='decoder_deconv4')
-
-            # implement the training operations
-            # we want to train the network such that the processed image y, matches the original image x
-            if self.is_training == True:
-
-                self.global_step = tf.Variable(
-                    initial_value=0, name='global_step', trainable=False)
-
-                # calculating mse loss
-                self.r_loss = tf.reduce_sum(
-                    tf.square(self.x - self.y), reduction_indices=[1, 2, 3])
-                self.r_loss = tf.reduce_mean(self.r_loss)
-
-                # calculating the Kullback–Leibler loss
-                self.kl_loss = -0.5 * \
-                    tf.reduce_sum((1 + self.logvar - tf.square(self.mu) -
-                                   tf.exp(self.logvar)), reduction_indices=1)
-
-                self.kl_loss = tf.maximum(
-                    self.kl_loss, self.kl_tolerance * self.z_size)
-
-                self.kl_loss = tf.reduce_mean(self.kl_loss)
-                self.loss = self.r_loss + self.kl_loss
-
-                self.lr = tf.Variable(self.learning_rate, trainable=False)
-                self.optimizer = tf.train.AdamOptimizer(learning_rate=self.lr)
-
-                grads = self.optimizer.compute_gradients(loss=self.loss)
-                self.train_op = self.optimizer.apply_gradients(
-                    grads_and_vars=grads, global_step=self.global_step, name='train_step')
-
-            self.init = tf.global_variables_initializer()
+  # Making a method that loads a saved checkpoint that restores all saved trained VAE weights
+  def load_checkpoint(self, checkpoint_path):
+    sess = self.sess
+    with self.g.as_default():
+      saver = tf.train.Saver(tf.global_variables())
+    ckpt = tf.train.get_checkpoint_state(checkpoint_path)
+    print('loading model', ckpt.model_checkpoint_path)
+    tf.logging.info('Loading model %s.', ckpt.model_checkpoint_path)
+    saver.restore(sess, ckpt.model_checkpoint_path)
